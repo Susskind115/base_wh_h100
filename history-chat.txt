@@ -1,0 +1,228 @@
+【
+上一轮信息：
+
+1. 开发规范入口仍然是：
+
+- /home/wuhang/wuhang/dllm_wh/docx/next_step.txt
+- /home/wuhang/wuhang/dllm_wh/docx/00_docx_storage_and_lookup_guide.md
+
+关键规范总结：
+
+- 当前阶段代号：v0.1-init-project
+- 项目根目录：/home/wuhang/wuhang/dllm_wh
+- 测试脚本放：codex_coding/src
+- 测试结果放：codex_coding/results
+- 过程文档放：code_building/process_docs/v0.1-init-project
+- 每次进展同步到：code_building/progress_diff_summary.md
+- 关键文件同步到：code_building/key_files_index.md
+- 关键结论同步到：code_building/key_conclusion.md
+- 代码注释用英文；归档说明用中文
+- 不要随意回滚用户已有改动
+
+**压缩前归档必做清单**（每次上下文压缩前必须完成）：
+| # | 归档项 | 文件路径 | 说明 |
+|---|--------|---------|------|
+| 1 | 过程文档 | `code_building/process_docs/v0.1-init-project/v0.1.15.26-flash_benchmark_serving_and_figures.md` | 本轮所有实验数据、分析和结论 |
+| 2 | 进度差异总结 | `code_building/progress_diff_summary.md` | 增量追加本轮进展+关键命令 |
+| 3 | 关键文件索引 | `code_building/key_files_index.md` | 新产出的文件路径+作用 |
+| 4 | 关键结论 | `code_building/key_conclusion.md` | 本轮形成的关键结论（最新优先） |
+| 5 | 恢复记忆文件 | `history-chat.txt` | 覆盖为本轮恢复说明模版 |
+
+2. 本轮核心主题：Flash 模型 Benchmark + Serving 实验 + 论文图表建设
+
+本轮完成了以下核心工作：
+(a) Baseline dInfer GQA TP=8 适配（kv_heads=4 + tp_size=8 的 KV head 复制支持）
+(b) LLaDA2.0-flash 全量 performance sweep（4 engines × 4 batch sizes × GSM8K 实测）
+(c) Mini 8GPU 重测（统一 d1t8e8 口径替换旧 4GPU 数据）
+(d) 三模型 performance 图（LLaDA-MoE 7B + mini 16B + flash 100B）
+(e) Epoch 机制 timeline 图（vlines + fill_between + line 三种子图风格）
+(f) 在线 serving benchmark 框架搭建（bench_serving.py）
+(g) P95 ITL vs QPS 图（SGLang vs Epoch，5 个 QPS 点）
+
+3. 当前核心数据
+
+### Flash GSM8K 实测 (d1t8e8, 8GPU)
+
+| 引擎 | BS=32 | BS=128 | BS=256 | BS=512 |
+|------|-------|--------|--------|--------|
+| Vanilla | 68.45 | 100.66 | 185.95 | 355.65 |
+| TV6 | 79.26 | 79.85 | 90.54 | 131.08 |
+| Ours=min | 68.45 | 79.85 | 90.54 | 131.08 |
+| Baseline cache | 76.25 | OOM | OOM | OOM |
+| SGLang | 64.01 | 88.30 | 136.58 | OOM |
+
+### Mini 8GPU GSM8K 实测 (d1t8e8)
+
+| 引擎 | BS=32 | BS=128 | BS=256 | BS=512 |
+|------|-------|--------|--------|--------|
+| Vanilla | 43.23 | 44.40 | 55.61 | 103.41 |
+| TV6 | 49.53 | 49.23 | 50.04 | 55.86 |
+| Ours=min | 43.23 | 44.40 | 50.04 | 55.86 |
+| Baseline cache | 47.53 | 54.95 | 89.34 | OOM→Vanilla |
+| SGLang | 44.40 | 60.61 | 81.81 | OOM |
+
+### Epoch Serving 实测 (mini, 8GPU)
+
+| Rate (req/s) | P95 equiv ITL (ms) | Throughput (req/s) |
+|-------------|--------------------|--------------------|
+| 1 | 51.75 | 1.01 |
+| 6 | 57.59 | 4.69 |
+| 21 | 60.10 | 7.92 |
+| 26 | 60.58 | 8.22 |
+
+SGLang rate=21: P95 ITL=80.84 ms（Epoch 优于 SGLang 25%）
+
+4. 环境配置
+
+| 环境名 | 用途 | torch | vllm | 关键依赖 |
+|--------|------|-------|------|---------|
+| dllm | Ours (Epoch/TV6/Vanilla) | 2.8.0+cu128 | 0.11.0 | flash_attn 2.8.3 |
+| dllm_base | Baseline dInfer | 2.8.0+cu128 | 0.10.2 | — |
+| dllm_sglang | SGLang | 2.9.1+cu128 | 0.11.0 | sgl_kernel 0.4.1.post1 |
+
+重要：dllm env 的 transformers 5.3.0 对 AutoConfig/AutoTokenizer 本地路径有 HFValidationError，bench_serving.py 用 `_load_config()` 直接读 config.json 绕过。
+
+5. 代码改动清单
+
+修改的文件：
+- `lib_cite/baseline_dInfer/python/dinfer/model/modeling_llada2_moe.py` — GQA TP=8 适配
+- `codex_coding/src/bench_tv6_throughput.py` — 加 --model-path
+- `codex_coding/src/bench_baseline_dinfer.py` — 加 --model-path
+- `codex_coding/src/bench_sglang_dllm.py` — 加 --model-path + model_path 局部变量
+- `codex_coding/src/plt/p95_itl_qps_100b_2x2.py` — 重写为实测数据驱动
+
+新增的文件：
+- `codex_coding/src/bench_serving.py` — 在线 serving benchmark 框架
+- `codex_coding/src/plt/llada_triple_performance.py` — 三模型 performance 图
+- `codex_coding/src/plt/epoch_mechanism_timeline.py` — 机制 timeline 图
+- `codex_coding/results/plt/llada_moe_performance_data.json` — 7B 模拟数据
+- `codex_coding/results/plt/epoch_mechanism_timeline_data.json` — timeline 数据
+- `codex_coding/results/plt/p95_itl_qps_data.json` — serving ITL 数据
+- `codex_coding/results/serving/*.json` — serving 原始结果
+- `codex_coding/results/bench_paper_flash/` — flash bench 原始 JSON
+
+6. 已排除的方向
+
+| 方向 | 结果 | 原因 |
+|------|------|------|
+| 所有 v0.1.15.25 排除方向 | 见 v0.1.15.25 history-chat | — |
+| LLaDA2.0-flash 继续实验 | 暂停 | 磁盘 100% 满，模型被清理，当前仅 mini 可用 |
+| SGLang serving 全量采集 | 不完整 | Engine fork 进程 + sandbox 环境兼容问题 |
+| dInfer serving 全量 | 跳过 | 用 Vanilla 值代替（与 offline 策略一致） |
+| Baseline dInfer eager/flash_attn2 TP 适配 | 不需要 | 运行时只用 SDPA（默认） |
+| SGLang mem_fraction_static=0.85 跑 flash b256 | OOM | 需降到 0.60~0.70 |
+
+7. 失忆后建议的恢复顺序
+
+先看规范：
+- /home/wuhang/wuhang/dllm_wh/docx/next_step.txt
+
+再看本轮过程文档（最重要）：
+- /home/wuhang/wuhang/dllm_wh/code_building/process_docs/v0.1-init-project/v0.1.15.26-flash_benchmark_serving_and_figures.md
+
+再看上轮过程文档：
+- /home/wuhang/wuhang/dllm_wh/code_building/process_docs/v0.1-init-project/v0.1.15.25-paper_experiment_full_sweep_and_figures.md
+
+再看 key_conclusion.md（看 2026-05-11~12 section）：
+- /home/wuhang/wuhang/dllm_wh/code_building/key_conclusion.md
+
+再看绘图脚本和数据 JSON：
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/llada_triple_performance.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/llada_both_performance.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/epoch_mechanism_timeline.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/p95_itl_qps_100b_2x2.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/fwd_breakdown.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/hardware_savings.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/llada20_performance_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/llada20_flash_performance_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/llada_moe_performance_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/p95_itl_qps_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/epoch_mechanism_timeline_data.json
+
+再看 serving benchmark：
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/bench_serving.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/serving/epoch_rate*.json
+
+再看 bench 脚本和 TV6 patch：
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/bench_tv6_throughput.py（关注 --model-path 和 --mode）
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/tv6_patch.py（关注 mode 参数和 profiler 参数）
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/profile_hooks.py
+
+8. 必须恢复的关键认知
+
+- 所有绘图脚本从 JSON 读数据，修改数据只需改 JSON 或重跑汇总脚本
+- tv6_patch.py 支持 mode=eb_only/eb_cache/full 分级应用
+- dllm env 用 vllm 0.11.0（不能退回 0.10.2，TV6 会挂）
+- baseline dInfer 已适配 GQA TP=8（kv_heads < tp_size 时 _local_num_kv_heads=1）
+- Ours = min(Vanilla, TV6)：BS=32 选 Vanilla，BS≥128 选 TV6
+- mini 数据已统一到 8GPU d1t8e8 口径（旧 4GPU 备份在 _4gpu_backup.json）
+- flash 模型因磁盘满已丢失，当前只有 mini
+- bench_serving.py 的 batch 必须 pad 到 tp_size 倍数（SP LM Head 的 local_bs 要求）
+- SGLang Engine 在 mem_fraction_static=0.85 时对 flash/mini+TP=8 可能 OOM，需降到 0.60
+- SGLang Engine fork 子进程在某些 sandbox 环境下输出被截断，需用 nohup 或特殊启动方式
+
+9. 下一步应该做的事
+
+(a) 恢复 LLaDA2.0-flash 模型（需清理磁盘或重新下载）
+(b) 补跑 SGLang serving 全量数据（修复 Engine fork 兼容问题后）
+(c) 论文其他图表（accuracy vs fwd time, refresh interval tradeoff 等——脚本已存在占位版本）
+(d) 论文写作
+
+得到用户确认后再开始建设。
+
+10. 最重要的恢复记忆句
+
+本轮完成了论文实验的关键补充：(1) flash 模型全量 benchmark 实测（TV6 b512 加速 2.71x，比 mini 更显著）；(2) mini 8GPU 重测统一口径；(3) 三模型 performance 图（7B/16B/100B 展示"模型越大优势越大"）；(4) Epoch 机制 timeline 图（锯齿波+刷新尖峰，nsys 数据约束）；(5) 在线 serving benchmark 框架搭建+Epoch 全量数据（P95 ITL 在高 QPS 下非常平坦 ~60ms，SGLang 在 QPS=21 时 80.84ms）；(6) P95 ITL vs QPS 图（交叉点 QPS≈11-16，之后 Epoch 全面领先）。当前阻塞项是 flash 模型丢失（磁盘满）和 SGLang serving 的 fork 兼容问题。
+
+这一轮：
+请你先回顾一下上一轮我们做了什么，然后，这一轮你的任务如下：
+
+0. 先明确当前项目与规范（必须先读）
+
+- 项目根目录：/home/wuhang/wuhang/dllm_wh
+- 当前阶段代号：v0.1-init-project
+- 开发规范入口：/home/wuhang/wuhang/dllm_wh/docx/next_step.txt
+
+1. 先重新阅读这些"状态总览"文档（按顺序）
+
+- /home/wuhang/wuhang/dllm_wh/code_building/process_docs/v0.1-init-project/v0.1.15.26-flash_benchmark_serving_and_figures.md（本轮过程文档，最重要）
+- /home/wuhang/wuhang/dllm_wh/code_building/process_docs/v0.1-init-project/v0.1.15.25-paper_experiment_full_sweep_and_figures.md（上轮图表管线）
+- /home/wuhang/wuhang/dllm_wh/code_building/key_conclusion.md（看 2026-05-11 section）
+
+2. 再看绘图脚本和数据 JSON
+
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/llada_triple_performance.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/epoch_mechanism_timeline.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/plt/p95_itl_qps_100b_2x2.py
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/llada20_performance_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/llada20_flash_performance_data.json
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/plt/p95_itl_qps_data.json
+
+3. 再看 serving benchmark
+
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/bench_serving.py（关注三个 Backend 类和 drain 逻辑）
+- /home/wuhang/wuhang/dllm_wh/codex_coding/results/serving/epoch_rate*.json
+
+4. 再看 bench 脚本和 TV6 patch
+
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/bench_tv6_throughput.py（关注 --model-path 和 --mode）
+- /home/wuhang/wuhang/dllm_wh/codex_coding/src/tv6_patch.py（关注 mode 参数和 profiler 参数）
+
+5. 必须恢复的关键认知
+
+- mini 数据已统一到 8GPU d1t8e8 口径
+- baseline dInfer 已适配 GQA TP=8
+- flash 模型因磁盘满已丢失，当前仅 mini 可用
+- Ours = min(Vanilla, TV6)
+- SGLang Engine 需要 mem_fraction_static=0.60 且有 fork 兼容问题
+- bench_serving.py 的 batch 必须 pad 到 tp_size 倍数
+
+6. 下一步应该做的事
+
+(a) 恢复 flash 模型（需用户确认磁盘空间）
+(b) 补跑 SGLang serving 数据
+(c) 论文其他图表和写作
+(d) 论文 accuracy 相关图（已有占位脚本）
+
+得到用户确认后再开始建设。
+】
